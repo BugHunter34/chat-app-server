@@ -2,7 +2,10 @@ fastapi
 uvicorn 
 pymongo 
 motor
-pyndantic
+pydantic
+pydantic[email]
 dotenv
 passlib
 bcrypt
+slowapi
+resend
