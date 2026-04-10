@@ -5,7 +5,7 @@ motor
 pydantic
 pydantic[email]
 dotenv
-passlib
 bcrypt
 slowapi
 resend
+websockets
