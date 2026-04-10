@@ -9,3 +9,4 @@ bcrypt
 slowapi
 resend
 websockets
+pyjwt

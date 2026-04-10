@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconne
 from pydantic import BaseModel, EmailStr
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 import json
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,11 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import bcrypt
+import jwt
+
+# --- JWT Conf ---
+SECRET_KEY = "69tsIsRandomString54319#GangGang@secretIdk760" 
+ALGORITHM = "HS256"
 
 # Logs folder setup
 if not os.path.exists("logs"):
@@ -41,6 +46,14 @@ def setup_logger(name, log_file, level=logging.INFO):
 server_logger = setup_logger('server', 'logs/serverLog.txt')
 user_logger = setup_logger('user', 'logs/usersLog.txt')
 crash_logger = setup_logger('crash', 'logs/crashLog.txt', level=logging.ERROR)
+
+# Web token gen for Session
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    # valid for 24h
+    expire = datetime.utcnow() + timedelta(hours=24)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 # Password hash 
 def get_password_hash(password: str) -> str:
@@ -209,6 +222,15 @@ async def get_user_status(userName: str):
     
     return {"status": "offline"}
 
+# show all users to Admin (only basic info)
+@app.get("/all-users")
+async def get_all_users(requester_role: str):
+    if requester_role != "admin":
+        return {"status": "error", "message": "Unauthorized"}
+    
+    users = users_collection.find({}, {"userName": 1, "email": 1, "role": 1, "status": 1, "_id": 0})
+    return {"status": "success", "users": list(users)}
+
 @app.post("/feedback")
 @limiter.limit("1/minute") # will wait 1 minute 
 async def handle_feedback(request: Request, feedback: Feedback):
@@ -260,6 +282,7 @@ async def login_user(user: UserLogin):
         return {"status": "error", "message": "Invalid username or password"}
     
     stored_hash = db_user.get("passwordHash")
+    
     if not stored_hash or not verify_password(user.password, stored_hash):
         return {"status": "error", "message": "Invalid username or password"}
         
@@ -267,13 +290,91 @@ async def login_user(user: UserLogin):
         return {"status": "error", "message": "This account is banned."}
 
     user_logger.info(f"[API] User logged in: {db_user['userName']}")
+    # Generate 24h JWT token
+    access_token = create_access_token(data={"sub": db_user["userName"], "role": db_user.get("role", "user")})
     
     return {
         "status": "success", 
         "username": db_user["userName"], # will return case sens in Frontend
+        "role": db_user.get("role", "user"),
         "friends": db_user.get("friends", []),
-        "friendRequests": db_user.get("friendRequests", [])
+        "friendRequests": db_user.get("friendRequests", []),
+        "token": access_token
     }
+
+@app.get("/verify-token")
+async def verify_token(token: str):
+    """auto login via Token"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        
+        # Fetch data for UI
+        db_user = users_collection.find_one({"userName": {"$regex": f"^{username}$", "$options": "i"}})
+        if not db_user:
+            return {"status": "error"}
+            
+        return {
+            "status": "success",
+            "username": db_user["userName"],
+            "role": db_user.get("role", "user"),
+            "friends": db_user.get("friends", []),
+            "friendRequests": db_user.get("friendRequests", [])
+        }
+    except Exception:
+        return {"status": "error", "message": "Token expired or invalid"}
+
+# --- Messages history---
+@app.get("/messages")
+async def get_messages(user1: str, user2: str):
+    # query messages between users
+    messages = db.messages.find({
+        "participants": {"$all": [user1, user2]}
+    }).sort("timestamp", 1).limit(999999) # all messages by time (if someone has 100k they are crazy, won't load that)
+    
+    history = []
+    for msg in messages:
+        history.append({
+            "sender": msg["sender"],
+            "content": msg["content"]
+        })
+    return {"status": "success", "messages": history}
+
+# Admin only route to promote users to admin
+@app.post("/promote")
+async def promote_user(data: dict):
+    requester = data.get("requester")
+    target_user = data.get("target")
+
+    if not requester or not target_user:
+        return {"status": "error", "message": "Missing data"}
+
+    # admin check
+    req_db_user = users_collection.find_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}})
+    
+    if not req_db_user or req_db_user.get("role") != "admin":
+        user_logger.warning(f"[SECURITY] {requester} tryed to OP {target_user} without permission! badGuy")
+        return {"status": "error", "message": "Unauthorized. not an admin."}
+
+    # find target
+    target_db_user = users_collection.find_one({"userName": {"$regex": f"^{target_user}$", "$options": "i"}})
+    if not target_db_user:
+        return {"status": "error", "message": "Target not found"}
+
+    real_target_name = target_db_user["userName"]
+
+    # already admin
+    if target_db_user.get("role") == "admin":
+        return {"status": "error", "message": f"{real_target_name} is already an admin"}
+
+    users_collection.update_one(
+        {"userName": real_target_name},
+        {"$set": {"role": "admin"}}
+    )
+    
+    user_logger.info(f"[API] {requester} promoted {real_target_name} to admin.")
+    return {"status": "success", "message": f"{real_target_name} is now an Admin!"}
+
 
 @app.post("/friend-request")
 async def friend_request(data: dict):
