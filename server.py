@@ -15,6 +15,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 import bcrypt
 import jwt
+from fastapi.staticfiles import StaticFiles
 
 # --- JWT Conf ---
 SECRET_KEY = "69tsIsRandomString54319#GangGang@secretIdk760" 
@@ -93,6 +94,8 @@ app.add_middleware(
     allow_methods=["*"], 
     allow_headers=["*"], 
 )
+# static files for emojis
+app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
 
 resend.api_key = "re_3ZAwJNuw_GTxG12JoBEHMW342JyjfbTnq"
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
