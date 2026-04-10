@@ -420,7 +420,7 @@ async def friend_request(data: dict):
 
 @app.post("/respond-friend-request")
 async def respond_friend_request(data: dict):
-    # cannonProof extractor
+    # secure extractor
     requester = data.get("requester") or data.get("from") or data.get("sender")
     receiver = data.get("receiver") or data.get("to")
     action = data.get("action")     
