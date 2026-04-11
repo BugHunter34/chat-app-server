@@ -24,12 +24,9 @@ SECRET_KEY = "69tsIsRandomString54319#GangGang@secretIdk760"
 ALGORITHM = "HS256"
 
 # Logs folder setup
-if not os.path.exists("logs"):
-    os.makedirs("logs")
-if not os.path.exists("images"):
-    os.makedirs("images")
-if not os.path.exists("emojis"):
-    os.makedirs("emojis")
+for folder in ["logs", "emojis", "images", "sounds"]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
 
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
@@ -103,6 +100,7 @@ app.add_middleware(
 # static files folder paths
 app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
 app.mount("/images", StaticFiles(directory="images"), name="images")
+app.mount("/sounds", StaticFiles(directory="sounds"), name="sounds")
 
 resend.api_key = "re_3ZAwJNuw_GTxG12JoBEHMW342JyjfbTnq"
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
