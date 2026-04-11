@@ -1,5 +1,6 @@
 __pycache__/
 myenv/
+secret.env
 logs/
 emojis/
-secret.env
+images/

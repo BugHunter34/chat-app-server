@@ -10,3 +10,5 @@ slowapi
 resend
 websockets
 pyjwt
+python-multipart
+uuid

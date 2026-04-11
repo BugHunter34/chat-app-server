@@ -16,6 +16,8 @@ from slowapi.errors import RateLimitExceeded
 import bcrypt
 import jwt
 from fastapi.staticfiles import StaticFiles
+from fastapi import UploadFile, File
+import uuid
 
 # --- JWT Conf ---
 SECRET_KEY = "69tsIsRandomString54319#GangGang@secretIdk760" 
@@ -24,6 +26,10 @@ ALGORITHM = "HS256"
 # Logs folder setup
 if not os.path.exists("logs"):
     os.makedirs("logs")
+if not os.path.exists("images"):
+    os.makedirs("images")
+if not os.path.exists("emojis"):
+    os.makedirs("emojis")
 
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
@@ -94,8 +100,9 @@ app.add_middleware(
     allow_methods=["*"], 
     allow_headers=["*"], 
 )
-# static files for emojis
+# static files folder paths
 app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
+app.mount("/images", StaticFiles(directory="images"), name="images")
 
 resend.api_key = "re_3ZAwJNuw_GTxG12JoBEHMW342JyjfbTnq"
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
@@ -251,6 +258,33 @@ async def handle_feedback(request: Request, feedback: Feedback):
     except Exception as e:
         crash_logger.error(f"Feedback error: {e}")
         return {"status": "error", "message": "Server error"}
+
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    # block non images
+    ext = file.filename.split(".")[-1].lower()
+    if ext not in ["png", "jpg", "jpeg", "gif", "webp"]:
+        return {"status": "error", "message": "Only images! don't be bad guy"}
+        
+    MAX_SIZE = 50 * 1024 * 1024  # 50MB limit
+    file_size = 0
+    filename = f"{uuid.uuid4()}.{ext}" # gen random name to avoid name conflicts
+    filepath = os.path.join("images", filename)
+    
+    # send images in chunks to don't overflow memory
+    with open(filepath, "wb") as f:
+        while chunk := await file.read(1024 * 1024): 
+            file_size += len(chunk)
+            if file_size > MAX_SIZE:
+                f.close()
+                os.remove(filepath) # if more than 50MB deletes file
+                return {"status": "error", "message": "File exceeds 50MB limit!"}
+            f.write(chunk)
+        print(f"[SERVER LOG] Image saved to disk: {filepath}")
+    server_logger.info(f"Image uploaded: {filename} ({file_size} bytes)")
+    final_url = f"https://api.andhyy.com/images/{filename}"
+    return {"status": "success", "url": final_url}
+
 
 @app.post("/register")
 async def register_user(user: UserCreate):
