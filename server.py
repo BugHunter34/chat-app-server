@@ -18,19 +18,14 @@ import jwt
 from fastapi.staticfiles import StaticFiles
 from fastapi import UploadFile, File
 import uuid
+import random
+import secrets
+import string
 
-# --- JWT Conf ---
-SECRET_KEY = "69tsIsRandomString54319#GangGang@secretIdk760" 
-ALGORITHM = "HS256"
-
-# Logs folder setup
-for folder in ["logs", "emojis", "images", "sounds"]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-
-formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+load_dotenv()
 
 # logger
+formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 def setup_logger(name, log_file, level=logging.INFO):
     handler = logging.FileHandler(log_file)
     handler.setFormatter(formatter)
@@ -50,6 +45,40 @@ def setup_logger(name, log_file, level=logging.INFO):
 server_logger = setup_logger('server', 'logs/serverLog.txt')
 user_logger = setup_logger('user', 'logs/usersLog.txt')
 crash_logger = setup_logger('crash', 'logs/crashLog.txt', level=logging.ERROR)
+
+
+# JWT secret generator --Made by Gemini 3.1Pro --fallback if the Token isn't in env
+def generate_secret_key():
+    # combine letters
+    alphabet = string.ascii_letters + string.digits + "!@#$%^&*()_+-=[]|;:,.<>?"
+    
+    # more secretly generate the key
+    secret = ''.join(secrets.choice(alphabet) for _ in range(50))
+    return secret
+
+# values
+ALGORITHM = "HS256"
+SECRET_KEY = os.getenv("SECRET_KEY", generate_secret_key())
+resend.api_key = os.getenv("RESEND_API_KEY", "re_ERROR")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
+client = MongoClient(MONGO_URI)
+
+
+# try MongoDB
+try:
+    client.admin.command('ping')
+    server_logger.info("connected to local mongoDB")
+    db = client["chat_database"]
+    users_collection = db["users"]
+except ConnectionFailure:
+    crash_logger.error("Failed to connect, might be offline")
+
+       
+# Logs folder setup
+for folder in ["logs", "emojis", "images", "sounds"]:
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
 
 # Web token gen for Session
 def create_access_token(data: dict):
@@ -102,17 +131,7 @@ app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/sounds", StaticFiles(directory="sounds"), name="sounds")
 
-resend.api_key = "re_3ZAwJNuw_GTxG12JoBEHMW342JyjfbTnq"
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/")
-client = MongoClient(MONGO_URI)
 
-try:
-    client.admin.command('ping')
-    server_logger.info("connected to local mongoDB")
-    db = client["chat_database"]
-    users_collection = db["users"]
-except ConnectionFailure:
-    crash_logger.error("Failed to connect, might be offline")
 
 class ConnectionManager:
     def __init__(self):
