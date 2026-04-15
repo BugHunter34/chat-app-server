@@ -1,7 +1,8 @@
 import os
 import logging
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status, WebSocket, WebSocketDisconnect, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, status, WebSocket, WebSocketDisconnect, Request
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
@@ -88,6 +89,29 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
+
+# current user from token -- made my Gemini 3.1Pro, with some edits by me
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    """verify JWT and grab user"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return payload  # return username and role
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired or invalid",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
 # Password hash 
 def get_password_hash(password: str) -> str:
     pwd_bytes = password.encode('utf-8')
@@ -121,7 +145,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["https://andhyy.com","https://chat.andhyy.com","https://api.andhyy.com", "http://localhost:3000"], 
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"], 
@@ -193,11 +217,26 @@ manager = ConnectionManager()
 
 # --- THE WEBSOCKET ENDPOINT ---
 @app.websocket("/ws/{username}")
-async def websocket_endpoint(websocket: WebSocket, username: str):
+async def websocket_endpoint(websocket: WebSocket, username: str, token: str = Query(...)):
     server_logger.info(f"[WS] Connection attempt from: {username}")
+    
+    # validate token --by Gemini3.1Pro
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        token_username = payload.get("sub")
+        
+        if not token_username or token_username.lower() != username.lower():
+            server_logger.warning(f"[SECURITY] Invalid WS impersonation attempt for {username}")
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    # ----------------
+    # safe to connect
     await manager.connect(websocket, username)
     await manager.broadcast_status(username, "online")
-    
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -208,8 +247,8 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
                 # Fallback for difrent naming
                 receiver = payload.get("to") or payload.get("receiver")
                 content = payload.get("content")
-                sender = payload.get("from") or payload.get("sender") or username
-                
+                sender = username
+
                 if not receiver or not content:
                     continue
 
@@ -234,8 +273,10 @@ async def websocket_endpoint(websocket: WebSocket, username: str):
         manager.disconnect(username)
         await manager.broadcast_status(username, "offline")
 
-
+# api.andhyy.com routes
+@app.get("/")
 @app.get("/ping")
+@app.get("/hello")
 def ping_server():
     return {"status": "ok", "message": "Server is running"}
 
@@ -251,12 +292,14 @@ async def get_user_status(userName: str):
 
 # show all users to Admin (only basic info)
 @app.get("/all-users")
-async def get_all_users(requester_role: str):
-    if requester_role != "admin":
-        return {"status": "error", "message": "Unauthorized"}
+async def get_all_users(current_user: dict = Depends(get_current_user)):
+    # check JWT role
+    if current_user.get("role") != "admin":
+         raise HTTPException(status_code=403, detail="Unauthorized. Admins only.")
     
     users = users_collection.find({}, {"userName": 1, "email": 1, "role": 1, "status": 1, "_id": 0})
     return {"status": "success", "users": list(users)}
+
 
 @app.post("/feedback")
 @limiter.limit("1/minute") # will wait 1 minute 
@@ -281,7 +324,7 @@ async def upload_image(file: UploadFile = File(...)):
     # block non images
     ext = file.filename.split(".")[-1].lower()
     if ext not in ["png", "jpg", "jpeg", "gif", "webp"]:
-        return {"status": "error", "message": "Only images! don't be bad guy"}
+        return {"status": "error", "message": "Only images! "}
         
     MAX_SIZE = 50 * 1024 * 1024  # 50MB limit
     file_size = 0
@@ -380,30 +423,32 @@ async def verify_token(token: str):
 
 # --- Messages history---
 @app.get("/messages")
-async def get_messages(user1: str, user2: str):
+async def get_messages(user1: str, user2: str, current_user: dict = Depends(get_current_user)):
+    requester = current_user.get("sub")
+    
+    # SECURITY: Ensure the person requesting is actually user1 or user2!
+    if requester.lower() not in [user1.lower(), user2.lower()]:
+        raise HTTPException(status_code=403, detail="You can only view your own messages, snooper!")
+
     # query messages between users
     messages = db.messages.find({
         "participants": {"$all": [user1, user2]}
-    }).sort("timestamp", 1).limit(999999) # all messages by time (if someone has 100k they are crazy, won't load that)
+    }).sort("timestamp", 1).limit(999999) 
     
-    history = []
-    for msg in messages:
-        history.append({
-            "sender": msg["sender"],
-            "content": msg["content"]
-        })
+    history = [{"sender": msg["sender"], "content": msg["content"]} for msg in messages]
     return {"status": "success", "messages": history}
 
 # Admin only route to promote users to admin
 @app.post("/promote")
-async def promote_user(data: dict):
-    requester = data.get("requester")
+async def promote_user(data: dict, current_user: dict = Depends(get_current_user)):
+    # JWT grab
+    requester = current_user.get("sub") 
     target_user = data.get("target")
-
-    if not requester or not target_user:
-        return {"status": "error", "message": "Missing data"}
-
     # admin check
+    if current_user.get("role") != "admin":
+        user_logger.warning(f"[SECURITY] {requester} tried to OP {target_user} without permission! badGuy")
+        raise HTTPException(status_code=403, detail="Unauthorized. not an admin.")
+    
     req_db_user = users_collection.find_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}})
     
     if not req_db_user or req_db_user.get("role") != "admin":
@@ -431,14 +476,13 @@ async def promote_user(data: dict):
 
 
 @app.post("/friend-request")
-async def friend_request(data: dict):
-    # Fallback for diff naming
-    sender = data.get("from") or data.get("sender")
+async def friend_request(data: dict, current_user: dict = Depends(get_current_user)):
+    # sender from JWT
+    sender = current_user.get("sub")
     receiver = data.get("to") or data.get("receiver")
     
-    if not sender or not receiver:
-        return {"status": "error", "message": "Missing sender or receiver details"}
-
+    if not receiver:
+        return {"status": "error", "message": "Missing receiver details"}
     user_logger.info(f"[API] Friend request: {sender} -> {receiver}")
 
     # lookup
