@@ -48,11 +48,11 @@ user_logger = setup_logger('user', 'logs/usersLog.txt')
 crash_logger = setup_logger('crash', 'logs/crashLog.txt', level=logging.ERROR)
 
 
-# JWT secret generator --Made by Gemini 3.1Pro --fallback if the Token isn't in env
+# JWT secret generator --fallback if the Token isn't in env
+# every Token goes invalid
 def generate_secret_key():
     # combine letters
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*()_+-=[]|;:,.<>?"
-    
     # more secretly generate the key
     secret = ''.join(secrets.choice(alphabet) for _ in range(50))
     return secret
@@ -90,7 +90,7 @@ def create_access_token(data: dict):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-# current user from token -- made my Gemini 3.1Pro, with some edits by me
+# current user from token
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     """verify JWT and grab user"""
@@ -145,7 +145,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://andhyy.com","https://chat.andhyy.com","https://api.andhyy.com", "http://localhost:3000"], 
+    allow_origins=["https://andhyy.com","https://chat.andhyy.com","https://api.andhyy.com", "http://localhost:3000", "https://www.andhyy.com"], 
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"], 
@@ -220,7 +220,7 @@ manager = ConnectionManager()
 async def websocket_endpoint(websocket: WebSocket, username: str, token: str = Query(...)):
     server_logger.info(f"[WS] Connection attempt from: {username}")
     
-    # validate token --by Gemini3.1Pro
+    # validate token 
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         token_username = payload.get("sub")
@@ -320,32 +320,68 @@ async def handle_feedback(request: Request, feedback: Feedback):
         return {"status": "error", "message": "Server error"}
 
 @app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
-    # block non images
-    ext = file.filename.split(".")[-1].lower()
-    if ext not in ["png", "jpg", "jpeg", "gif", "webp"]:
-        return {"status": "error", "message": "Only images! "}
+async def upload_image(request: Request, sender: str = None, receiver: str = None):
+
+    # Inspired by StackOverflow Fet community, modified and understood
+    try:
+        content_type = request.headers.get("content-type", "")
+        # extract file data
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+           # finds first file 
+            file_obj = next((v for v in form.values() if hasattr(v, "filename")), None)
+            if not file_obj:
+                return {"status": "error", "message": "No image found"}
+            ext = file_obj.filename.split(".")[-1].lower()
+            file_bytes = await file_obj.read()
+        else:
+            # Flet web reads raw bytes
+            file_bytes = await request.body()
+            ext = "gif" # fallback since raw bytes don't have filename
+        #-----------  
+        # Mem protect
+        if not file_bytes:
+            return {"status": "error", "message": "Empty file"}
+        if len(file_bytes) > 50 * 1024 * 1024:
+            return {"status": "error", "message": "File > 50MB, send smaller one!"}
+            
+        # saving random name to avoid same names
+        filename = f"{uuid.uuid4()}.{ext}"
+        filepath = os.path.join("images", filename)
         
-    MAX_SIZE = 50 * 1024 * 1024  # 50MB limit
-    file_size = 0
-    filename = f"{uuid.uuid4()}.{ext}" # gen random name to avoid name conflicts
-    filepath = os.path.join("images", filename)
-    
-    # send images in chunks to don't overflow memory
-    with open(filepath, "wb") as f:
-        while chunk := await file.read(1024 * 1024): 
-            file_size += len(chunk)
-            if file_size > MAX_SIZE:
-                f.close()
-                os.remove(filepath) # if more than 50MB deletes file
-                return {"status": "error", "message": "File exceeds 50MB limit!"}
-            f.write(chunk)
-        print(f"[SERVER LOG] Image saved to disk: {filepath}")
-    server_logger.info(f"Image uploaded: {filename} ({file_size} bytes)")
-    final_url = f"https://api.andhyy.com/images/{filename}"
-    return {"status": "success", "url": final_url}
-
-
+        with open(filepath, "wb") as f:
+            f.write(file_bytes)
+            
+        server_logger.info(f"Image uploaded: {filename} ({len(file_bytes)} bytes)")
+        final_url = f"https://api.andhyy.com/images/{filename}"
+        
+        # server side routing to WEB
+        if sender and receiver:
+            msg_text = f"[IMG]{final_url}"
+            
+            # MongoDB
+            db.messages.insert_one({
+                "participants": [sender, receiver],
+                "sender": sender,
+                "content": msg_text,
+                "timestamp": datetime.utcnow()
+            })
+            
+            # Notify reciver
+            await manager.send_personal_message(
+                {"type": "chat_message", "from": sender, "content": msg_text}, receiver
+            )
+            # Notify sender (for WEB)
+            await manager.send_personal_message(
+                {"type": "chat_message", "from": sender, "content": msg_text}, sender
+            )
+            server_logger.info(f"[API] Server routed image for WEB client: {sender} -> {receiver}")
+            
+        return {"status": "success", "url": final_url}
+        
+    except Exception as e:
+        crash_logger.error(f"Upload error: {e}")
+        return {"status": "error", "message": "Server error"}
 @app.post("/register")
 async def register_user(user: UserCreate):
     # another case in checker
