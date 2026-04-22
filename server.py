@@ -377,10 +377,7 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
             await manager.send_personal_message(
                 {"type": "chat_message", "from": sender, "content": msg_text}, receiver
             )
-            # Notify sender (for WEB)
-            await manager.send_personal_message(
-                {"type": "chat_message", "from": sender, "content": msg_text}, sender
-            )
+            
             server_logger.info(f"[API] Server routed image for WEB client: {sender} -> {receiver}")
         
         # if there's only sender it means he uploaded avatar
