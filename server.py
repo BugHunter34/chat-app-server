@@ -76,7 +76,7 @@ except ConnectionFailure:
 
        
 # Logs folder setup
-for folder in ["logs", "emojis", "images", "sounds"]:
+for folder in ["logs", "emojis", "images", "sounds", "avatars"]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
@@ -91,6 +91,7 @@ def create_access_token(data: dict):
 
 
 # current user from token
+# code that extracts user from token, found on StackOverflow, modified and understood
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     """verify JWT and grab user"""
@@ -145,7 +146,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://andhyy.com","https://chat.andhyy.com","https://api.andhyy.com", "http://localhost:3000", "https://www.andhyy.com"], 
+    allow_origins=["https://andhyy.com","https://chat.andhyy.com", "http://localhost:3000", "https://www.andhyy.com"], 
     allow_credentials=True,
     allow_methods=["*"], 
     allow_headers=["*"], 
@@ -154,7 +155,7 @@ app.add_middleware(
 app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/sounds", StaticFiles(directory="sounds"), name="sounds")
-
+app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
 
 
 class ConnectionManager:
@@ -345,18 +346,18 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
         if len(file_bytes) > 50 * 1024 * 1024:
             return {"status": "error", "message": "File > 50MB, send smaller one!"}
             
-        # saving random name to avoid same names
-        filename = f"{uuid.uuid4()}.{ext}"
-        filepath = os.path.join("images", filename)
-        
-        with open(filepath, "wb") as f:
-            f.write(file_bytes)
-            
-        server_logger.info(f"Image uploaded: {filename} ({len(file_bytes)} bytes)")
-        final_url = f"https://api.andhyy.com/images/{filename}"
-        
+       
         # server side routing to WEB
         if sender and receiver:
+            # saving random name to avoid same names
+            filename = f"{uuid.uuid4()}.{ext}"
+            filepath = os.path.join("images", filename)
+            
+            with open(filepath, "wb") as f:
+                f.write(file_bytes)
+                
+            server_logger.info(f"Image uploaded: {filename} ({len(file_bytes)} bytes)")
+            final_url = f"https://api.andhyy.com/images/{filename}"
             msg_text = f"[IMG]{final_url}"
             
             # MongoDB
@@ -376,12 +377,41 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
                 {"type": "chat_message", "from": sender, "content": msg_text}, sender
             )
             server_logger.info(f"[API] Server routed image for WEB client: {sender} -> {receiver}")
+        
+        # if there's only sender it means he uploaded avatar
+        elif sender and not receiver:
+            # Finds User in DB
+            user_doc = users_collection.find_one({"userName": {"$regex": f"^{sender}$", "$options": "i"}})
+            if not user_doc:
+                return {"status": "error", "message": "User not found"}
+                
+            # Current avatar version
+            current_version = user_doc.get("avatarVersion", 0)
+            new_version = current_version + 1
             
+            # create specific naming like "john4.png" (fourth avatar of John)
+            filename = f"{user_doc['userName']}{new_version}.{ext}"
+            filepath = os.path.join("avatars", filename) # saves to /avatars/
+            
+            with open(filepath, "wb") as f:
+                f.write(file_bytes)
+                
+            final_url = f"https://api.andhyy.com/avatars/{filename}"
+            
+            # Update DB with new avatar and version
+            users_collection.update_one(
+                {"_id": user_doc["_id"]},
+                {"$set": {"avatarUrl": final_url, "avatarVersion": new_version}}
+            )
+            
+            user_logger.info(f"[API] {user_doc['userName']} changed their avatar to {filename}")
+
         return {"status": "success", "url": final_url}
         
     except Exception as e:
-        crash_logger.error(f"Upload error: {e}")
+        crash_logger.error(f"[API] File upload error: {e}")
         return {"status": "error", "message": "Server error"}
+    
 @app.post("/register")
 async def register_user(user: UserCreate):
     # another case in checker
@@ -435,6 +465,76 @@ async def login_user(user: UserLogin):
         "token": access_token
     }
 
+# Get Avatar URL of user
+@app.get("/current-avatar")
+async def get_current_avatar(current_user: dict = Depends(get_current_user)):
+    requester = current_user.get("sub")
+    user_doc = users_collection.find_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}})
+    if not user_doc:
+        return {"status": "error", "message": "User not found"}
+    return {"status": "success", "avatarUrl": user_doc.get("avatarUrl")}
+
+@app.post("/profile")
+async def update_profile(data: dict, current_user: dict = Depends(get_current_user)):
+    requester = current_user.get("sub")
+    new_password = data.get("password")
+    new_avatar = data.get("avatarUrl")
+    new_username = data.get("userName")
+
+    update_fields = {}
+    
+    if new_username and new_username.lower() != requester.lower():
+        # will check availability of username
+        existing_user = users_collection.find_one({"userName": {"$regex": f"^{new_username}$", "$options": "i"}})
+        if existing_user:
+            return {"status": "error", "message": "Username is already taken!"}
+        update_fields["userName"] = new_username
+    # Update DB
+    users_collection.update_one(
+            {"userName": {"$regex": f"^{requester}$", "$options": "i"}},
+            {"$push": {"usernameHistory": requester}} # Push moves old username into history list
+        )
+    
+    if new_password:
+        update_fields["passwordHash"] = get_password_hash(new_password)
+    
+    if new_avatar:
+        update_fields["avatarUrl"] = new_avatar
+
+    if not update_fields:
+        return {"status": "error", "message": "got no changes to update"}
+    
+    users_collection.update_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}}, {"$set": update_fields})
+    # --- Username change handler ---
+    if "userName" in update_fields:
+        real_new_name = update_fields["userName"]
+        
+        # 1) Update all messages to new sender username
+        db.messages.update_many({"sender": requester}, {"$set": {"sender": real_new_name}})
+        # 2) Update participants in messages
+        db.messages.update_many({"participants": requester}, {"$set": {"participants.$": real_new_name}})
+        # 3) Update friend lists of ALL users where new username must be changed
+        users_collection.update_many({"friends": requester}, {"$set": {"friends.$": real_new_name}})
+        # 4) Update friend requests of ALL users where new username must be changed
+        users_collection.update_many({"friendRequests": requester}, {"$set": {"friendRequests.$": real_new_name}})
+        
+        user_logger.info(f"[API] User {requester} changed name to {real_new_name}")
+        
+        # --- JWT Token issue (must be regenerated) ---
+        new_token = create_access_token(
+            data={"sub": real_new_name, "role": current_user.get("role")}    
+        )
+        
+        return {
+            "status": "success", 
+            "message": "Profile and username updated!",
+            "new_token": new_token,      # new token
+            "new_username": real_new_name # new name
+        }
+
+    user_logger.info(f"[API] User updated profile: {requester}")
+    return {"status": "success", "message": "updated profile"}
+
 @app.get("/verify-token")
 async def verify_token(token: str):
     """auto login via Token"""
@@ -462,9 +562,9 @@ async def verify_token(token: str):
 async def get_messages(user1: str, user2: str, current_user: dict = Depends(get_current_user)):
     requester = current_user.get("sub")
     
-    # SECURITY: Ensure the person requesting is actually user1 or user2!
+    # ensure that requester is authorized (either user1 or user2) not MIM
     if requester.lower() not in [user1.lower(), user2.lower()]:
-        raise HTTPException(status_code=403, detail="You can only view your own messages, snooper!")
+        raise HTTPException(status_code=403, detail="You can only view your own messages, bad boy")
 
     # query messages between users
     messages = db.messages.find({
