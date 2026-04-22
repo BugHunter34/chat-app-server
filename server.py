@@ -76,7 +76,7 @@ except ConnectionFailure:
 
        
 # Logs folder setup
-for folder in ["logs", "emojis", "images", "sounds", "avatars"]:
+for folder in ["logs", "emojis", "images", "sounds", "avatars", "download"]:
     if not os.path.exists(folder):
         os.makedirs(folder)
 
@@ -156,6 +156,7 @@ app.mount("/emojis", StaticFiles(directory="emojis"), name="emojis")
 app.mount("/images", StaticFiles(directory="images"), name="images")
 app.mount("/sounds", StaticFiles(directory="sounds"), name="sounds")
 app.mount("/avatars", StaticFiles(directory="avatars"), name="avatars")
+app.mount("/download", StaticFiles(directory="download"), name="download")
 
 
 class ConnectionManager:
@@ -281,15 +282,19 @@ async def websocket_endpoint(websocket: WebSocket, username: str, token: str = Q
 def ping_server():
     return {"status": "ok", "message": "Server is running"}
 
+
 @app.get("/user-status")
 async def get_user_status(userName: str):
     # Case insensitive checker
     user = users_collection.find_one({"userName": {"$regex": f"^{userName}$", "$options": "i"}})
+    avatar_url = user.get("avatarUrl", "https://api.andhyy.com/avatars/default-avatar.gif")
+    if not user:
+        return {"status": "offline", "avatarUrl": "https://api.andhyy.com/avatars/default-avatar.png"}
     
     if user and user.get("status") == "online":
-        return {"status": "online"}
+        return {"status": "online", "avatarUrl": avatar_url}
     
-    return {"status": "offline"}
+    return {"status": "offline", "avatarUrl": avatar_url}
 
 # show all users to Admin (only basic info)
 @app.get("/all-users")
@@ -527,7 +532,7 @@ async def update_profile(data: dict, current_user: dict = Depends(get_current_us
         
         return {
             "status": "success", 
-            "message": "Profile and username updated!",
+            "message": "Profile updated!",
             "new_token": new_token,      # new token
             "new_username": real_new_name # new name
         }
