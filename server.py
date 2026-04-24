@@ -167,9 +167,12 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, username: str):
         await websocket.accept()
-        
+
+        # regex inject prevention
+        safe_username = re.escape(username)
+
         # case insensitive looker
-        user = users_collection.find_one({"userName": {"$regex": f"^{username}$", "$options": "i"}})
+        user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
         real_username = user["userName"] if user else username
 
         self.active_connections[real_username] = websocket
@@ -178,8 +181,12 @@ class ConnectionManager:
         users_collection.update_one({"userName": real_username}, {"$set": {"status": "online"}})
 
     def disconnect(self, username: str):
+
+        # regex inject prevention
+        safe_username = re.escape(username)
+
         # case insensitive looker - disconnecter
-        user = users_collection.find_one({"userName": {"$regex": f"^{username}$", "$options": "i"}})
+        user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
         real_username = user["userName"] if user else username
 
         if real_username in self.active_connections:
@@ -189,7 +196,11 @@ class ConnectionManager:
         users_collection.update_one({"userName": real_username}, {"$set": {"status": "offline"}})
 
     async def broadcast_status(self, username: str, status: str):
-        user = users_collection.find_one({"userName": {"$regex": f"^{username}$", "$options": "i"}})
+
+        # regex inject prevention
+        safe_username = re.escape(username)
+
+        user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
 
         if user and "friends" in user:
             real_username = user["userName"]
@@ -204,8 +215,11 @@ class ConnectionManager:
                     server_logger.info(f"[WS] Pushed '{status}' status of {real_username} to friend: {friend}")
 
     async def send_personal_message(self, message: dict, receiver_username: str):
+        # regex inject prevention
+        safe_receiver_username = re.escape(receiver_username)
+
         # reciver looker
-        user = users_collection.find_one({"userName": {"$regex": f"^{receiver_username}$", "$options": "i"}})
+        user = users_collection.find_one({"userName": {"$regex": f"^{safe_receiver_username}$", "$options": "i"}})
         real_receiver = user["userName"] if user else receiver_username
 
         if real_receiver in self.active_connections:
@@ -287,8 +301,10 @@ def ping_server():
 
 @app.get("/user-status")
 async def get_user_status(userName: str):
+    # regex inject prevention
+    safe_username = re.escape(userName)
     # Case insensitive checker
-    user = users_collection.find_one({"userName": {"$regex": f"^{userName}$", "$options": "i"}})
+    user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
     avatar_url = user.get("avatarUrl", "https://api.andhyy.com/avatars/default-avatar.gif")
     if not user:
         return {"status": "offline", "avatarUrl": "https://api.andhyy.com/avatars/default-avatar.png"}
@@ -397,8 +413,11 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
         
         # If there's only sender it means he uploaded avatar 
         elif sender and not receiver:
+            # regex inject prevention
+            safe_sender = re.escape(sender)
+
             # Finds User in DB
-            user_doc = users_collection.find_one({"userName": {"$regex": f"^{sender}$", "$options": "i"}})
+            user_doc = users_collection.find_one({"userName": {"$regex": f"^{safe_sender}$", "$options": "i"}})
             if not user_doc:
                 return {"status": "error", "message": "User not found"}
                 
@@ -519,16 +538,22 @@ async def update_profile(data: dict, current_user: dict = Depends(get_current_us
     new_username = data.get("userName")
 
     update_fields = {}
+
+    #regex inject prevention
+    safe_requester = re.escape(requester)
+    safe_new_username = re.escape(new_username)
     
     if new_username and new_username.lower() != requester.lower():
+
         # will check availability of username
-        existing_user = users_collection.find_one({"userName": {"$regex": f"^{new_username}$", "$options": "i"}})
+        existing_user = users_collection.find_one({"userName": {"$regex": f"^{safe_new_username}$", "$options": "i"}})
         if existing_user:
             return {"status": "error", "message": "Username is already taken!"}
         update_fields["userName"] = new_username
+    
     # Update DB
     users_collection.update_one(
-            {"userName": {"$regex": f"^{requester}$", "$options": "i"}},
+            {"userName": {"$regex": f"^{safe_requester}$", "$options": "i"}},
             {"$push": {"usernameHistory": requester}} # Push moves old username into history list
         )
     
@@ -541,7 +566,8 @@ async def update_profile(data: dict, current_user: dict = Depends(get_current_us
     if not update_fields:
         return {"status": "error", "message": "got no changes to update"}
     
-    users_collection.update_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}}, {"$set": update_fields})
+    users_collection.update_one({"userName": {"$regex": f"^{safe_requester}$", "$options": "i"}}, {"$set": update_fields})
+
     # --- Username change handler ---
     if "userName" in update_fields:
         real_new_name = update_fields["userName"]
@@ -578,9 +604,12 @@ async def verify_token(token: str):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username = payload.get("sub")
-        
+
+        # regex inject prevention
+        safe_username = re.escape(username)
+
         # Fetch data for UI
-        db_user = users_collection.find_one({"userName": {"$regex": f"^{username}$", "$options": "i"}})
+        db_user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
         if not db_user:
             return {"status": "error"}
             
@@ -617,19 +646,23 @@ async def promote_user(data: dict, current_user: dict = Depends(get_current_user
     # JWT grab
     requester = current_user.get("sub") 
     target_user = data.get("target")
+    # regex inject prevention
+    safe_requester = re.escape(requester)
+    safe_target = re.escape(target_user) if target_user else None
+
     # admin check
     if current_user.get("role") != "admin":
         user_logger.warning(f"[SECURITY] {requester} tried to OP {target_user} without permission! badGuy")
         raise HTTPException(status_code=403, detail="Unauthorized. not an admin.")
     
-    req_db_user = users_collection.find_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}})
+    req_db_user = users_collection.find_one({"userName": {"$regex": f"^{safe_requester}$", "$options": "i"}})
     
     if not req_db_user or req_db_user.get("role") != "admin":
         user_logger.warning(f"[SECURITY] {requester} tryed to OP {target_user} without permission! badGuy")
         return {"status": "error", "message": "Unauthorized. not an admin."}
 
     # find target
-    target_db_user = users_collection.find_one({"userName": {"$regex": f"^{target_user}$", "$options": "i"}})
+    target_db_user = users_collection.find_one({"userName": {"$regex": f"^{safe_target}$", "$options": "i"}})
     if not target_db_user:
         return {"status": "error", "message": "Target not found"}
 
