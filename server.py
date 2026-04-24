@@ -1,5 +1,6 @@
 import os
 import logging
+import re
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query, status, WebSocket, WebSocketDisconnect, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -431,18 +432,31 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
         crash_logger.error(f"[API] File upload error: {e}")
         return {"status": "error", "message": "Server error"}
     
+    
+FORBIDDEN_USERNAMES = {"admin", "root", "system", "moderator", "support", "*", "null", "undefined", "operator", "sysadmin", "administrator", "owner", "webmaster", "NONE", "ALL", "ANY", "GUEST", "ANONYMOUS", "TEST", "USER", "USERNAME"}
 @app.post("/register")
 async def register_user(user: UserCreate):
-    # another case in checker
+
+    # check Forbidden names
+    if user.userName.lower() in FORBIDDEN_USERNAMES:
+        user_logger.info(f"[SECURITY] Attempt to register with forbidden username: {user.userName}")
+        raise HTTPException(status_code=400, detail="Forbidden: username is not allowed")
+    
+
+    # prevent regex injection
+    safe_username = re.escape(user.userName)
+    safe_email = re.escape(user.email)
+
+    # check DB safely 
     if users_collection.find_one({"$or": [
-        {"userName": {"$regex": f"^{user.userName}$", "$options": "i"}}, 
-        {"email": {"$regex": f"^{user.email}$", "$options": "i"}}
+        {"userName": {"$regex": f"^{safe_username}$", "$options": "i"}}, 
+        {"email": {"$regex": f"^{safe_email}$", "$options": "i"}}
     ]}):
         raise HTTPException(status_code=400, detail="Username or email already exists")
     
     user_doc = {
         "email": user.email.lower(),
-        "userName": user.userName,  # will keep the case sens in DB but lookups are insens
+        "userName": user.userName,  # keep case sensitive names for Displaying
         "passwordHash": get_password_hash(user.password),
         "role": "user",
         "isBanned": False,
@@ -459,7 +473,11 @@ async def register_user(user: UserCreate):
 
 @app.post("/login")
 async def login_user(user: UserLogin):
-    db_user = users_collection.find_one({"userName": {"$regex": f"^{user.userName}$", "$options": "i"}})
+    # prevent regex injection
+    safe_username = re.escape(user.userName)
+
+    # safe query
+    db_user = users_collection.find_one({"userName": {"$regex": f"^{safe_username}$", "$options": "i"}})
     if not db_user:
         return {"status": "error", "message": "Invalid username or password"}
     
@@ -635,14 +653,18 @@ async def friend_request(data: dict, current_user: dict = Depends(get_current_us
     # sender from JWT
     sender = current_user.get("sub")
     receiver = data.get("to") or data.get("receiver")
-    
+
+    # prevent regex injection
+    safe_sender = re.escape(sender)
+    safe_target = re.escape(receiver) if receiver else None
+
     if not receiver:
         return {"status": "error", "message": "Missing receiver details"}
     user_logger.info(f"[API] Friend request: {sender} -> {receiver}")
 
     # lookup
-    sender_user = users_collection.find_one({"userName": {"$regex": f"^{sender}$", "$options": "i"}})
-    target_user = users_collection.find_one({"userName": {"$regex": f"^{receiver}$", "$options": "i"}})
+    sender_user = users_collection.find_one({"userName": {"$regex": f"^{safe_sender}$", "$options": "i"}})
+    target_user = users_collection.find_one({"userName": {"$regex": f"^{safe_target}$", "$options": "i"}})
     
     if not target_user or not sender_user:
         return {"status": "error", "message": "User not found"}
