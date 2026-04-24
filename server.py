@@ -732,15 +732,19 @@ async def respond_friend_request(data: dict):
     requester = data.get("requester") or data.get("from") or data.get("sender")
     receiver = data.get("receiver") or data.get("to")
     action = data.get("action")     
-    
+
+    # regex inject prevention
+    safe_requester = re.escape(requester) if requester else None
+    safe_receiver = re.escape(receiver) if receiver else None
+
     if not requester or not receiver or not action:
         return {"status": "error", "message": "Missing required data fields"}
         
     user_logger.info(f"[API] Friend request response: {receiver} {action}ed {requester}")
 
     # Fetch case insens users
-    req_user = users_collection.find_one({"userName": {"$regex": f"^{requester}$", "$options": "i"}})
-    rec_user = users_collection.find_one({"userName": {"$regex": f"^{receiver}$", "$options": "i"}})
+    req_user = users_collection.find_one({"userName": {"$regex": f"^{safe_requester}$", "$options": "i"}})
+    rec_user = users_collection.find_one({"userName": {"$regex": f"^{safe_receiver}$", "$options": "i"}})
 
     if not req_user or not rec_user:
         return {"status": "error", "message": "One or both users not found"}
