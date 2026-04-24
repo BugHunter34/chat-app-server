@@ -12,3 +12,6 @@ websockets
 pyjwt
 python-multipart
 uuid
+uvicorn[standard]
+python-dotenv
+filetype

@@ -22,6 +22,7 @@ import uuid
 import random
 import secrets
 import string
+import filetype 
 
 load_dotenv()
 
@@ -324,46 +325,59 @@ async def handle_feedback(request: Request, feedback: Feedback):
     except Exception as e:
         crash_logger.error(f"Feedback error: {e}")
         return {"status": "error", "message": "Server error"}
-
+    
 @app.post("/upload")
 async def upload_image(request: Request, sender: str = None, receiver: str = None):
-
-    # Inspired by StackOverflow Fet community, modified and understood
     try:
         content_type = request.headers.get("content-type", "")
-        # extract file data
+        
+        # file data extraction
         if "multipart/form-data" in content_type:
             form = await request.form()
-           # finds first file 
+            # find first file (multipart could contain other fields)
             file_obj = next((v for v in form.values() if hasattr(v, "filename")), None)
             if not file_obj:
-                return {"status": "error", "message": "No image found"}
-            ext = file_obj.filename.split(".")[-1].lower()
+                return {"status": "error", "message": "No file found"}
+            
             file_bytes = await file_obj.read()
+            # ask for extension in rawbytes via filetype guesser
+            guess_ext = filetype.guess(file_bytes)
+            if guess_ext:
+                ext = guess_ext.extension
+            # if it fails we'll use the original in the name (could be malicious if somone sents .png.exe)
+            else:
+                ext = file_obj.filename.split(".")[-1].lower() if "." in file_obj.filename else "bin"
+                
         else:
-            # Flet web reads raw bytes
+            # fallback if user is on old client Version that used older func without multipart 
             file_bytes = await request.body()
-            ext = "gif" # fallback since raw bytes don't have filename
-        #-----------  
-        # Mem protect
+            
+            # rawbytes guesser 
+            guess_ext = filetype.guess(file_bytes)
+            if guess_ext:
+                ext = guess_ext.extension
+            else:
+                ext = "bin" # fallback if it fails, prevents malicious extensions
+
+        # -----------  
+        # Mem protect (under 50MB per file)
         if not file_bytes:
             return {"status": "error", "message": "Empty file"}
         if len(file_bytes) > 50 * 1024 * 1024:
             return {"status": "error", "message": "File > 50MB, send smaller one!"}
             
-       
-        # server side routing to WEB
+        # routing for WEB
         if sender and receiver:
-            # saving random name to avoid same names
+            # Saving random name to avoid same names
             filename = f"{uuid.uuid4()}.{ext}"
             filepath = os.path.join("images", filename)
             
             with open(filepath, "wb") as f:
                 f.write(file_bytes)
                 
-            server_logger.info(f"Image uploaded: {filename} ({len(file_bytes)} bytes)")
+            server_logger.info(f"File uploaded: {filename} ({len(file_bytes)} bytes)")
             final_url = f"https://api.andhyy.com/images/{filename}"
-            msg_text = f"[IMG]{final_url}"
+            msg_text = f"[FILE]{final_url}"
             
             # MongoDB
             db.messages.insert_one({
@@ -373,14 +387,14 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
                 "timestamp": datetime.utcnow()
             })
             
-            # Notify reciver
+            # Notify receiver
             await manager.send_personal_message(
                 {"type": "chat_message", "from": sender, "content": msg_text}, receiver
             )
             
-            server_logger.info(f"[API] Server routed image for WEB client: {sender} -> {receiver}")
+            server_logger.info(f"[API] Server routed file for WEB client: {sender} -> {receiver}")
         
-        # if there's only sender it means he uploaded avatar
+        # If there's only sender it means he uploaded avatar 
         elif sender and not receiver:
             # Finds User in DB
             user_doc = users_collection.find_one({"userName": {"$regex": f"^{sender}$", "$options": "i"}})
@@ -391,7 +405,7 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
             current_version = user_doc.get("avatarVersion", 0)
             new_version = current_version + 1
             
-            # create specific naming like "john4.png" (fourth avatar of John)
+            # Create specific naming like "john4.png" (fourth avatar of John)
             filename = f"{user_doc['userName']}{new_version}.{ext}"
             filepath = os.path.join("avatars", filename) # saves to /avatars/
             
@@ -407,6 +421,9 @@ async def upload_image(request: Request, sender: str = None, receiver: str = Non
             )
             
             user_logger.info(f"[API] {user_doc['userName']} changed their avatar to {filename}")
+        
+        else:
+            return {"status": "error", "message": "missing parameters for routing"}
 
         return {"status": "success", "url": final_url}
         
